@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crimes 2.Slow
 // @namespace    eaglewing.torn.smuggling
-// @version      3.1.0
+// @version      3.2.0
 // @description  Just for a laugh: two unofficial crimes (Smuggling and Assassination) to mess about with until a new crime is released officially.
 // @author       Eaglewing
 // @match        https://www.torn.com/page.php?sid=crimes*
@@ -42,7 +42,7 @@
   const shuffle = (a) => a.slice().sort(() => Math.random() - 0.5);
   const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const skillOf = (xp) => Math.min(100, 1 + Math.sqrt(xp / 6));
+  const skillOf = (xp) => Math.min(100, 1 + Math.sqrt(xp / 8));
   const levelOf = (xp) => Math.floor(skillOf(xp));
   const progressOf = (xp) => (levelOf(xp) >= 100 ? 100 : Math.round((skillOf(xp) % 1) * 100));
   const fmt = (ms) => {
@@ -135,35 +135,48 @@
   const SMUGGLING = (() => {
     const BOARD_SIZE = 8;
     const MAX_TRANSIT = 5;
+    const PATROL_PERIOD = 240000; // one full customs patrol cycle, in ms
+    const PATROL_NAMES = ['Quiet', 'Patrolled', 'Crackdown'];
+
     const ROUTE_ORDER = ['road', 'rail', 'sea', 'air', 'mule'];
     const ROUTES = {
-      road: { name: 'Road', nerve: 4, secs: 45, base: 0.86, mult: 1.0,
+      road: { name: 'Road', nerve: 4, secs: 45, base: 0.86, mult: 1.0, patrol: [0, 1, 2, 1], off: 0,
         go: 'A shipment of {c} leaves town behind a false panel in a delivery van.',
         icon: '<path d="M1 4h8v6H1zM10 6h3l2 2v2h-5zM3.5 12.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM12 12.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/>' },
-      rail: { name: 'Rail', nerve: 5, secs: 90, base: 0.88, mult: 1.1,
+      rail: { name: 'Rail', nerve: 5, secs: 90, base: 0.88, mult: 1.1, patrol: [1, 0, 1, 2], off: 37000,
         go: 'A shipment of {c} is sealed inside a grain car on the night freight.',
         icon: '<path fill-rule="evenodd" d="M4 1h8a2 2 0 012 2v7a2 2 0 01-2 2l1.5 3h-1.7l-1-2H5.2l-1 2H2.5L4 12a2 2 0 01-2-2V3a2 2 0 012-2zm0 2v3h8V3zM5 10a1 1 0 100-2 1 1 0 000 2zm6 0a1 1 0 100-2 1 1 0 000 2z"/>' },
-      sea: { name: 'Sea', nerve: 6, secs: 180, base: 0.92, mult: 1.3,
+      sea: { name: 'Sea', nerve: 6, secs: 180, base: 0.92, mult: 1.3, patrol: [2, 1, 0, 0], off: 91000,
         go: 'A shipment of {c} is buried at the bottom of a container bound for the docks.',
         icon: '<path fill-rule="evenodd" d="M7 1h2v3h3v3l2 1-1.5 5h-9L2 8l2-1V4h3zM5.5 5.5v1l2.5-1 2.5 1v-1zM1 14.5c1.2 0 1.2-.8 2.3-.8s1.2.8 2.4.8 1.2-.8 2.3-.8 1.2.8 2.3.8 1.2-.8 2.4-.8 1.1.8 2.3.8V16H1z"/>' },
-      air: { name: 'Air', nerve: 8, secs: 30, base: 0.80, mult: 1.2,
+      air: { name: 'Air', nerve: 8, secs: 30, base: 0.80, mult: 1.2, patrol: [1, 2, 2, 0], off: 143000,
         go: 'A shipment of {c} is loaded into the hold of a cargo plane.',
         icon: '<path d="M8 0c.8 0 1.2.9 1.2 2v3.5L15 9v1.6L9.2 8.8V13l1.8 1.3V16L8 15l-3 1v-1.7L6.8 13V8.8L1 10.6V9l5.8-3.5V2C6.8.9 7.2 0 8 0z"/>' },
-      mule: { name: 'Courier', nerve: 3, secs: 60, base: 0.78, mult: 0.8,
+      mule: { name: 'Courier', nerve: 3, secs: 60, base: 0.78, mult: 0.8, patrol: [0, 0, 1, 2], off: 199000,
         go: 'A nervous courier boards a bus with a shipment of {c} taped under their coat.',
         icon: '<path d="M8 4a2 2 0 100-4 2 2 0 000 4zM5.5 5h5A1.5 1.5 0 0112 6.5V11h-1.3v5H8.6v-4.5H7.4V16H5.3v-5H4V6.5A1.5 1.5 0 015.5 5z"/>' },
     };
 
+    // Hiding places. Each cargo has one ideal hiding place; Bribed Official suits anything but costs a cut.
+    const HIDE_ORDER = ['fruit', 'false', 'tyres', 'papers', 'bribe'];
+    const HIDES = {
+      fruit: { name: 'Fruit Crate', icon: '<path d="M2 5h12v9H2zM2 5l2-3h8l2 3z" opacity=".9"/><path d="M5 7v5M8 7v5M11 7v5" stroke="#000" stroke-opacity=".35" stroke-width="1"/>' },
+      false: { name: 'False Bottom', icon: '<path fill-rule="evenodd" d="M2 2h12v12H2zm1.5 1.5v6h9v-6zm0 7.5v1.5h9V11z"/>' },
+      tyres: { name: 'Hollow Tyres', icon: '<path fill-rule="evenodd" d="M8 1a7 7 0 110 14A7 7 0 018 1zm0 3.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7z"/>' },
+      papers: { name: 'Forged Manifest', icon: '<path fill-rule="evenodd" d="M3 1h7l3 3v11H3zm2 5v1.3h6V6zm0 3v1.3h6V9zm0 3v1.3h4V12z"/>' },
+      bribe: { name: 'Bribed Official', icon: '<path d="M8 1.5a6.5 6.5 0 110 13 6.5 6.5 0 010-13zm.7 2.5H7.3v1A2 2 0 005.5 7c0 1.2.9 1.7 2.2 2 .9.2 1.1.4 1.1.8s-.4.7-1 .7-1-.3-1.1-.8H5.4a2.2 2.2 0 001.9 2V12h1.4v-.9A2 2 0 0010.6 9c0-1.2-.9-1.7-2.2-2-.9-.2-1.1-.4-1.1-.7s.4-.6.9-.6.9.3.9.7h1.4A2 2 0 008.7 5z"/>' },
+    };
+
     const CARGO = [
-      { name: 'Cigarettes',           lvl: 1,  routes: ['road', 'rail', 'sea', 'mule'], pay: [600, 1800],       xp: 5,  col: '#b5482f' },
-      { name: 'Counterfeit Handbags', lvl: 1,  routes: ['road', 'rail', 'sea', 'air'],  pay: [900, 2600],       xp: 6,  col: '#a8559b' },
-      { name: 'Bootleg DVDs',         lvl: 5,  routes: ['road', 'rail', 'mule'],        pay: [1500, 4000],      xp: 7,  col: '#2f6f8f' },
-      { name: 'Fireworks',            lvl: 10, routes: ['road', 'rail', 'sea'],         pay: [3000, 9000],      xp: 9,  col: '#c98a2b' },
-      { name: 'Plushies',             lvl: 15, routes: ['air', 'mule'],                 pay: [6000, 15000],     xp: 11, col: '#d98fb0' },
-      { name: 'Exotic Pets',          lvl: 25, routes: ['road', 'sea', 'air'],          pay: [12000, 40000],    xp: 14, col: '#3d7a4a' },
-      { name: 'Stolen Cars',          lvl: 40, routes: ['rail', 'sea'],                 pay: [45000, 120000],   xp: 18, col: '#6b7480' },
-      { name: 'Antiquities',          lvl: 55, routes: ['sea', 'air', 'mule'],          pay: [90000, 260000],   xp: 23, col: '#b59a55' },
-      { name: 'Xanax',                lvl: 75, routes: ['sea', 'air', 'mule'],          pay: [400000, 1200000], xp: 30, col: '#5a8fd0' },
+      { name: 'Cigarettes',           lvl: 1,  routes: ['road', 'rail', 'sea', 'mule'], hide: 'fruit',  pay: [40000, 60000],     xp: 5,  col: '#b5482f' },
+      { name: 'Counterfeit Handbags', lvl: 1,  routes: ['road', 'rail', 'sea', 'air'],  hide: 'false',  pay: [45000, 65000],     xp: 6,  col: '#a8559b' },
+      { name: 'Bootleg DVDs',         lvl: 5,  routes: ['road', 'rail', 'mule'],        hide: 'tyres',  pay: [55000, 80000],     xp: 7,  col: '#2f6f8f' },
+      { name: 'Fireworks',            lvl: 10, routes: ['road', 'rail', 'sea'],         hide: 'false',  pay: [70000, 100000],    xp: 9,  col: '#c98a2b' },
+      { name: 'Plushies',             lvl: 15, routes: ['air', 'mule'],                 hide: 'papers', pay: [90000, 130000],    xp: 11, col: '#d98fb0' },
+      { name: 'Exotic Pets',          lvl: 25, routes: ['road', 'sea', 'air'],          hide: 'fruit',  pay: [130000, 200000],   xp: 14, col: '#3d7a4a' },
+      { name: 'Stolen Cars',          lvl: 40, routes: ['rail', 'sea'],                 hide: 'papers', pay: [220000, 350000],   xp: 18, col: '#6b7480' },
+      { name: 'Antiquities',          lvl: 55, routes: ['sea', 'air', 'mule'],          hide: 'false',  pay: [350000, 550000],   xp: 23, col: '#b59a55' },
+      { name: 'Xanax',                lvl: 75, routes: ['sea', 'air', 'mule'],          hide: 'tyres',  pay: [700000, 1100000],  xp: 30, col: '#5a8fd0' },
     ];
 
     const TEXT = {
@@ -174,6 +187,7 @@
         'The drop goes exactly to plan. The {c} are gone and {cash} lands in your hand.',
         'Your contact counts the {c} twice, shrugs, and hands over {cash}.',
       ],
+      hint: 'Your buyer mutters that a {h} would have drawn less attention.',
       fail: [
         'Your contact never shows. You dump the {c} and go home.',
         'A sniffer dog takes an interest in the {c}, so the run is abandoned.',
@@ -184,12 +198,19 @@
         'Customs tear the shipment apart and seize the {c}. They are watching that route now.',
         'An informant tipped off the port authority. The {c} are gone and the route is burned.',
       ],
+      stop: 'Customs pull the {c} aside for a closer look. Bribe them, bluff it out, or ditch it.',
+      bribeOk: 'An envelope changes hands and the officer loses interest. The {c} sell for {cash} after the bribe.',
+      bribeBad: 'The officer pockets the envelope and seizes the {c} anyway.',
+      bluffOk: 'You argue the {c} are paperweights so convincingly the officer apologises. Your buyer pays {cash}.',
+      bluffBad: 'Your story falls apart under questioning. The {c} are seized and the route is burned.',
+      ditch: 'You walk away from the {c} before anyone can link them to you.',
     };
 
     const zero = () => ({ road: 0, rail: 0, sea: 0, air: 0, mule: 0 });
     const DEFAULTS = () => ({
       xp: 0, ok: 0, fail: 0, crit: 0, cash: 0, sent: 0, seized: 0, seq: 1,
-      used: zero(), heat: zero(), heatT: Date.now(), board: [], transit: [],
+      stops: 0, bribes: 0, bluffs: 0, ditched: 0,
+      used: zero(), heat: zero(), heatT: Date.now(), board: [], transit: [], known: {},
     });
 
     function fillBoard(s) {
@@ -205,6 +226,7 @@
     const db = store('tcs_smuggling_v2', DEFAULTS, (s) => {
       s.used = Object.assign(zero(), s.used);
       s.heat = Object.assign(zero(), s.heat);
+      s.known = s.known || {};
       const mins = Math.floor((Date.now() - s.heatT) / 60000);
       if (mins > 0) {
         ROUTE_ORDER.forEach((r) => { s.heat[r] = Math.max(0, s.heat[r] - mins * 4); });
@@ -212,6 +234,10 @@
       }
       fillBoard(s);
     });
+
+    const patrolPos = (r, now) => ((now + ROUTES[r].off) % PATROL_PERIOD) / PATROL_PERIOD;
+    const patrolSeg = (r, now) => Math.min(3, Math.floor(patrolPos(r, now) * 4));
+    const patrolAt = (r, now) => ROUTES[r].patrol[patrolSeg(r, now)];
 
     const crate = (col) => `
       <svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">
@@ -264,36 +290,51 @@
       '<rect x="66" y="64" width="40" height="16" fill="#6b7480"/>' +
       '<path d="M150 96V40M140 40h50M150 40l-14 16" stroke="#1a2732" stroke-width="4" fill="none"/></svg>');
 
-    const sel = {};
+    const selR = {};
+    const selH = {};
     let outcomes = {};
     let done = [];
 
-    const say = (tpl, cargo, cash) =>
-      tpl.replace('{c}', cargo.name.toLowerCase()).replace('{cash}', '<b class="inl">' + money(cash || 0) + '</b>');
+    const say = (tpl, cargo, cash, hide) =>
+      tpl.replace('{c}', cargo.name.toLowerCase())
+        .replace('{h}', hide ? HIDES[hide].name.toLowerCase() : '')
+        .replace('{cash}', '<b class="inl">' + money(cash || 0) + '</b>');
 
-    function boardRow(s, job) {
+    function patrolBar(r, now) {
+      const p = ROUTES[r].patrol;
+      const seg = patrolSeg(r, now);
+      return `<div class="tcx-routine small" data-route-patrol="${r}" title="Customs: ${PATROL_NAMES[p[seg]]}">${p.map((lv, i) =>
+        `<span class="tcx-seg e${2 - lv}${i === seg ? ' now' : ''}" title="${PATROL_NAMES[lv]}"></span>`).join('')}
+        <i class="tcx-pin" style="left:${(patrolPos(r, now) * 100).toFixed(2)}%"></i></div>`;
+    }
+
+    function boardRow(s, job, now) {
       const cargo = CARGO[job.c];
-      const chosen = sel[job.id];
-      const route = chosen && ROUTES[chosen];
+      const r = selR[job.id];
+      const route = r && ROUTES[r];
+      const h = selH[job.id];
       const full = s.transit.length >= MAX_TRANSIT;
+      const known = s.known[job.c];
 
-      const buttons = ROUTE_ORDER.map((r) => {
-        if (!cargo.routes.includes(r)) return '<span class="tcx-round none"></span>';
-        const h = s.heat[r];
-        const cls = (chosen === r ? ' sel' : '') + (h >= 60 ? ' hot' : h >= 30 ? ' warm' : '');
-        return `<button type="button" class="tcx-round${cls}" data-id="${job.id}" data-route="${r}" title="${ROUTES[r].name}" aria-label="${ROUTES[r].name}">${svgIcon(ROUTES[r].icon, 16)}</button>`;
+      const buttons = ROUTE_ORDER.map((id) => {
+        if (!cargo.routes.includes(id)) return '<span class="tcx-round none"></span>';
+        const heat = s.heat[id];
+        const cls = (r === id ? ' sel' : '') + (heat >= 60 ? ' hot' : heat >= 30 ? ' warm' : '');
+        return `<button type="button" class="tcx-round${cls}" data-id="${job.id}" data-route="${id}" title="${ROUTES[id].name}" aria-label="${ROUTES[id].name}">${svgIcon(ROUTES[id].icon, 16)}</button>`;
       }).join('');
 
-      const why = !route ? "You haven't selected a route" : full ? 'All of your crews are busy' : '';
+      const hTitle = h ? HIDES[h].name + '. Click to change' : 'Click to choose a hiding place';
+      const hide = `<button type="button" class="tcx-round tcx-weapon${h ? ' sel' : ''}${h && known && h === cargo.hide ? ' ideal' : ''}"
+        data-hide="${job.id}" title="${hTitle}" aria-label="${hTitle}">${h ? svgIcon(HIDES[h].icon, 16) : '?'}</button>`;
+
+      const why = !route ? "You haven't selected a route" : !h ? "You haven't chosen a hiding place" : full ? 'All of your crews are busy' : '';
       return `
         <div class="tcx-row">
           <div class="tcx-img">${crate(cargo.col)}</div>
-          <div class="tcx-sec grow">${cargo.name}</div>
+          <div class="tcx-sec grow"><div class="tcx-name"><b>${cargo.name}</b><small>${money(job.pay)}</small></div></div>
           <div class="tcx-sec">${buttons}</div>
-          <div class="tcx-sec reqs">
-            <div class="tcx-req">${route ? fmt(route.secs * 1000) : '?'}</div>
-            <div class="tcx-req">${route ? 'x' + route.mult.toFixed(1) : '?'}</div>
-          </div>
+          <div class="tcx-sec">${hide}</div>
+          <div class="tcx-sec routine patrol">${route ? patrolBar(r, now) : '<div class="tcx-routine small unknown">Customs</div>'}</div>
           <div class="tcx-sec commit">${commitBtn('Smuggle', route ? route.nerve : '?', `data-go="${job.id}"`, why)}</div>
         </div>${outcomeHtml(outcomes[job.id])}`;
     }
@@ -303,6 +344,21 @@
       const route = ROUTES[ship.r];
       const left = ship.eta - Date.now();
       const arrived = left <= 0;
+
+      if (!finished && ship.stop) {
+        const cut = Math.round(ship.pay * route.mult * 0.3);
+        return `
+          <div class="tcx-row">
+            <div class="tcx-img">${svgIcon(route.icon, 22)}</div>
+            <div class="tcx-sec grow"><div class="tcx-name"><b>${cargo.name}</b><small class="tcx-warn">Customs stop</small></div></div>
+            <div class="tcx-sec choices">
+              <button type="button" class="torn-btn tcx-btn mini" data-bribe="${ship.id}" title="Pay ${money(cut)} to make it go away"><span>Bribe</span><u></u><span>2</span></button>
+              <button type="button" class="torn-btn tcx-btn mini" data-bluff="${ship.id}" title="Talk your way out of it"><span>Bluff</span><u></u><span>3</span></button>
+              <button type="button" class="torn-btn tcx-btn mini" data-ditch="${ship.id}" title="Walk away from the shipment"><span>Ditch</span></button>
+            </div>
+          </div>${outcomeHtml(outcomes[ship.id])}`;
+      }
+
       const time = finished ? 'Collected'
         : arrived ? 'Arrived' : `<span class="tcx-eta" data-eta="${ship.eta}">${fmt(left)}</span>`;
       const status = finished ? route.name
@@ -320,54 +376,131 @@
     }
 
     function body(s) {
+      const now = Date.now();
       const transit = done.map((t) => transitRow(t, true)).join('') + s.transit.map((t) => transitRow(t, false)).join('');
-      return `<div class="tcx-group">${s.board.map((j) => boardRow(s, j)).join('')}</div>
+      return `<div class="tcx-group">${s.board.map((j) => boardRow(s, j, now)).join('')}</div>
         ${transit ? `<div class="tcx-group sep">${transit}</div>` : ''}`;
     }
 
     function dispatch(id) {
       const s = db.load();
       const i = s.board.findIndex((j) => j.id === id);
-      const r = sel[id];
-      if (i < 0 || !r || s.transit.length >= MAX_TRANSIT) return;
+      const r = selR[id];
+      const h = selH[id];
+      if (i < 0 || !r || !h || s.transit.length >= MAX_TRANSIT) return;
       done = [];
       outcomes = {};
+      const now = Date.now();
       const job = s.board.splice(i, 1)[0];
       const route = ROUTES[r];
-      s.transit.push({ id: job.id, c: job.c, pay: job.pay, r, eta: Date.now() + route.secs * 1000, h: s.heat[r] });
+      s.transit.push({ id: job.id, c: job.c, pay: job.pay, r, k: h, p: patrolAt(r, now), eta: now + route.secs * 1000, h: s.heat[r] });
       s.heat[r] = clamp(s.heat[r] + 12, 0, 100);
       s.used[r] += 1;
       s.sent += 1;
-      delete sel[id];
+      delete selR[id];
+      delete selH[id];
       outcomes[job.id] = { type: 'info', title: 'Shipment dispatched', text: say(route.go, CARGO[job.c]) };
       fillBoard(s);
       db.save(s);
     }
 
+    // Final payout after the route multiplier and any bribed-official cut.
+    const payout = (ship) => ship.pay * ROUTES[ship.r].mult * (ship.k === 'bribe' ? 0.85 : 1);
+
+    function win(s, ship, cash, title, text) {
+      const cargo = CARGO[ship.c];
+      s.ok += 1;
+      s.cash += cash;
+      s.xp += cargo.xp;
+      let t = text;
+      if (ship.k !== cargo.hide && ship.k !== 'bribe' && !s.known[ship.c]) {
+        s.known[ship.c] = true;
+        t += ' ' + say(TEXT.hint, cargo, 0, cargo.hide);
+      } else if (ship.k === cargo.hide) {
+        s.known[ship.c] = true;
+      }
+      outcomes[ship.id] = { type: 'ok', title, text: t };
+    }
+
+    function seize(s, ship, text) {
+      s.crit += 1;
+      s.seized += 1;
+      s.heat[ship.r] = clamp(s.heat[ship.r] + 30, 0, 100);
+      outcomes[ship.id] = { type: 'crit', title: 'Critical failure', text };
+    }
+
     function collect(id) {
       const s = db.load();
       const i = s.transit.findIndex((t) => t.id === id);
-      if (i < 0 || s.transit[i].eta > Date.now()) return;
+      if (i < 0 || s.transit[i].eta > Date.now() || s.transit[i].stop) return;
+      done = [];
+      outcomes = {};
+      const ship = s.transit[i];
+      const cargo = CARGO[ship.c];
+      const route = ROUTES[ship.r];
+      const patrol = ship.p == null ? 1 : ship.p;
+
+      const stopChance = clamp(0.08 + (ship.h || 0) * 0.002 + patrol * 0.07 - (ship.k === 'bribe' ? 0.08 : 0), 0.03, 0.45);
+      if (Math.random() < stopChance) {
+        ship.stop = true;
+        s.stops += 1;
+        outcomes[id] = { type: 'fail', title: 'Customs stop', text: say(TEXT.stop, cargo) };
+        db.save(s);
+        return;
+      }
+
+      s.transit.splice(i, 1);
+      const hideMod = ship.k === cargo.hide ? 0.1 : ship.k === 'bribe' ? 0.08 : 0;
+      const chance = clamp(route.base + levelOf(s.xp) * 0.001 - (ship.h || 0) * 0.004 + [0.05, 0, -0.08][patrol] + hideMod, 0.1, 0.97);
+      const roll = Math.random();
+      if (roll < chance) {
+        const cash = payout(ship);
+        win(s, ship, cash, 'Success', say(pick(TEXT.win), cargo, cash));
+      } else if (roll < chance + (1 - chance) * 0.65) {
+        s.fail += 1;
+        s.xp += 1;
+        outcomes[id] = { type: 'fail', title: 'Failure', text: say(pick(TEXT.fail), cargo) };
+      } else {
+        seize(s, ship, say(pick(TEXT.crit), cargo));
+      }
+      done.push(ship);
+      db.save(s);
+    }
+
+    function resolveStop(id, how) {
+      const s = db.load();
+      const i = s.transit.findIndex((t) => t.id === id && t.stop);
+      if (i < 0) return;
       done = [];
       outcomes = {};
       const ship = s.transit.splice(i, 1)[0];
       const cargo = CARGO[ship.c];
-      const route = ROUTES[ship.r];
-      const chance = clamp(route.base + levelOf(s.xp) * 0.001 - (ship.h || 0) * 0.004, 0.1, 0.97);
-      const roll = Math.random();
-      if (roll < chance) {
-        const cash = ship.pay * route.mult;
-        s.ok += 1; s.cash += cash; s.xp += cargo.xp;
-        outcomes[id] = { type: 'ok', title: 'Success', text: say(pick(TEXT.win), cargo, cash) };
-      } else if (roll < chance + (1 - chance) * 0.65) {
-        s.fail += 1; s.xp += 1;
-        outcomes[id] = { type: 'fail', title: 'Failure', text: say(pick(TEXT.fail), cargo) };
+      const full = payout(ship);
+
+      if (how === 'bribe') {
+        s.bribes += 1;
+        if (Math.random() < 0.9) {
+          const cash = full * 0.7;
+          win(s, ship, cash, 'Success', say(TEXT.bribeOk, cargo, cash));
+        } else {
+          seize(s, ship, say(TEXT.bribeBad, cargo));
+        }
+      } else if (how === 'bluff') {
+        const chance = clamp(0.45 + levelOf(s.xp) * 0.003 + (ship.k === cargo.hide ? 0.12 : 0) - (ship.h || 0) * 0.002, 0.1, 0.9);
+        if (Math.random() < chance) {
+          s.bluffs += 1;
+          s.xp += 3;
+          win(s, ship, full, 'Success', say(TEXT.bluffOk, cargo, full));
+        } else {
+          seize(s, ship, say(TEXT.bluffBad, cargo));
+        }
       } else {
-        s.crit += 1; s.seized += 1;
-        s.heat[ship.r] = clamp(s.heat[ship.r] + 30, 0, 100);
-        outcomes[id] = { type: 'crit', title: 'Critical failure', text: say(pick(TEXT.crit), cargo) };
+        s.fail += 1;
+        s.ditched += 1;
+        s.xp += 1;
+        outcomes[id] = { type: 'fail', title: 'Failure', text: say(TEXT.ditch, cargo) };
       }
-      done.push(ship);
+      done.push(Object.assign(ship, { stop: false }));
       db.save(s);
     }
 
@@ -375,7 +508,13 @@
       let b;
       if ((b = e.target.closest('[data-route]'))) {
         const id = Number(b.dataset.id);
-        sel[id] = sel[id] === b.dataset.route ? undefined : b.dataset.route;
+        selR[id] = selR[id] === b.dataset.route ? undefined : b.dataset.route;
+        return true;
+      }
+      if ((b = e.target.closest('[data-hide]'))) {
+        const id = Number(b.dataset.hide);
+        const k = HIDE_ORDER.indexOf(selH[id]);
+        selH[id] = HIDE_ORDER[(k + 1) % HIDE_ORDER.length];
         return true;
       }
       if ((b = e.target.closest('[data-go]'))) {
@@ -386,17 +525,37 @@
         if (!b.classList.contains('disabled')) collect(Number(b.dataset.collect));
         return true;
       }
+      if ((b = e.target.closest('[data-bribe]'))) { resolveStop(Number(b.dataset.bribe), 'bribe'); return true; }
+      if ((b = e.target.closest('[data-bluff]'))) { resolveStop(Number(b.dataset.bluff), 'bluff'); return true; }
+      if ((b = e.target.closest('[data-ditch]'))) { resolveStop(Number(b.dataset.ditch), 'ditch'); return true; }
       return false;
     }
 
+    function tick(root, now) {
+      root.querySelectorAll('[data-route-patrol]').forEach((el) => {
+        const r = el.dataset.routePatrol;
+        const pin = el.querySelector('.tcx-pin');
+        if (pin) pin.style.left = (patrolPos(r, now) * 100).toFixed(2) + '%';
+        const seg = patrolSeg(r, now);
+        el.querySelectorAll('.tcx-seg').forEach((sg, j) => sg.classList.toggle('now', j === seg));
+        el.title = 'Customs: ' + PATROL_NAMES[ROUTES[r].patrol[seg]];
+      });
+    }
+
     return {
-      slug: 'smuggling', name: 'Smuggling', type: 'Illicit services', db, banner: BANNER, tileBg: TILE_BG, body, click,
+      slug: 'smuggling', name: 'Smuggling', type: 'Illicit services', db, banner: BANNER, tileBg: TILE_BG, body, click, tick,
       stats: (s) => [
         ['Money earned', money(s.cash)], ['Shipments dispatched', s.sent], ['Shipments seized', s.seized],
+        ['Customs stops', s.stops], ['Bribes paid', s.bribes], ['Bluffs won', s.bluffs],
+        ['Shipments ditched', s.ditched], ['Hiding places known', Object.keys(s.known).length + ' / ' + CARGO.length],
         ['Road runs', s.used.road], ['Rail runs', s.used.rail], ['Sea runs', s.used.sea],
         ['Air runs', s.used.air], ['Courier runs', s.used.mule], ['Crews', s.transit.length + ' / ' + MAX_TRANSIT],
       ],
-      tileStatus: (s) => (s.transit.length ? { n: s.transit.length, label: 'Shipments in transit' } : null),
+      tileStatus: (s) => {
+        const stopped = s.transit.filter((t) => t.stop).length;
+        if (stopped) return { n: stopped, label: 'Customs stops' };
+        return s.transit.length ? { n: s.transit.length, label: 'Shipments in transit' } : null;
+      },
     };
   })();
 
@@ -429,17 +588,17 @@
     const W_IDS = Object.keys(WEAPONS);
 
     const TIERS = [
-      { name: 'Street Dealer',   lvl: 1,  base: 0.80, pay: [3000, 8000],       xp: 8,  col: '#6b7480' },
-      { name: 'Debt Collector',  lvl: 1,  base: 0.78, pay: [5000, 12000],      xp: 9,  col: '#7a6a55' },
-      { name: 'Loan Shark',      lvl: 1,  base: 0.76, pay: [8000, 18000],      xp: 10, col: '#2f6f8f' },
-      { name: 'Bent Accountant', lvl: 25, base: 0.72, pay: [30000, 70000],     xp: 14, col: '#3d7a4a' },
-      { name: 'Crooked Cop',     lvl: 25, base: 0.70, pay: [50000, 110000],    xp: 16, col: '#2b4c9a' },
-      { name: 'Smuggling Fence', lvl: 25, base: 0.68, pay: [70000, 150000],    xp: 17, col: '#4a7a8a' },
-      { name: 'Gang Lieutenant', lvl: 50, base: 0.64, pay: [200000, 450000],   xp: 23, col: '#8a2f2f' },
-      { name: 'Union Boss',      lvl: 50, base: 0.61, pay: [400000, 900000],   xp: 26, col: '#c98a2b' },
-      { name: 'Casino Owner',    lvl: 75, base: 0.57, pay: [900000, 2000000],  xp: 32, col: '#a83a6a' },
-      { name: 'Corrupt Judge',   lvl: 75, base: 0.55, pay: [1200000, 2600000], xp: 35, col: '#4a4a4a' },
-      { name: 'Rival Kingpin',   lvl: 75, base: 0.52, pay: [1500000, 3500000], xp: 38, col: '#6a3a9a' },
+      { name: 'Street Dealer',   lvl: 1,  base: 0.80, pay: [80000, 120000],       xp: 8,  col: '#6b7480' },
+      { name: 'Debt Collector',  lvl: 1,  base: 0.78, pay: [100000, 150000],      xp: 9,  col: '#7a6a55' },
+      { name: 'Loan Shark',      lvl: 1,  base: 0.76, pay: [120000, 180000],      xp: 10, col: '#2f6f8f' },
+      { name: 'Bent Accountant', lvl: 25, base: 0.72, pay: [250000, 400000],     xp: 14, col: '#3d7a4a' },
+      { name: 'Crooked Cop',     lvl: 25, base: 0.70, pay: [300000, 480000],    xp: 16, col: '#2b4c9a' },
+      { name: 'Smuggling Fence', lvl: 25, base: 0.68, pay: [350000, 550000],    xp: 17, col: '#4a7a8a' },
+      { name: 'Gang Lieutenant', lvl: 50, base: 0.64, pay: [700000, 1100000],   xp: 23, col: '#8a2f2f' },
+      { name: 'Union Boss',      lvl: 50, base: 0.61, pay: [900000, 1400000],   xp: 26, col: '#c98a2b' },
+      { name: 'Casino Owner',    lvl: 75, base: 0.57, pay: [1800000, 2800000],  xp: 32, col: '#a83a6a' },
+      { name: 'Corrupt Judge',   lvl: 75, base: 0.55, pay: [2200000, 3400000], xp: 35, col: '#4a4a4a' },
+      { name: 'Rival Kingpin',   lvl: 75, base: 0.52, pay: [2800000, 4500000], xp: 38, col: '#6a3a9a' },
     ];
 
     const PLACES = [
@@ -922,6 +1081,11 @@
       #tcx-root .tcx-rep { margin-left: 8px; color: #e8b730; letter-spacing: 1px; font-size: 12px; }
       #tcx-root .tcx-rep i { font-style: normal; opacity: .25; }
       #tcx-root .tcx-confirm { justify-content: center; align-items: center; gap: 10px; }
+      #tcx-root .tcx-routine.small { width: 90px; }
+      #tcx-root .tcx-sec.patrol { width: 110px; justify-content: center; }
+      #tcx-root .tcx-sec.choices { gap: 6px; padding: 0 8px; }
+      #tcx-root .tcx-btn.mini { width: auto; padding: 0 10px; }
+      #tcx-root .tcx-warn { color: var(--t-fail); opacity: 1; font-weight: 700; }
 
       @media (max-width: 784px) {
         #tcx-root .tcx-sec.reqs, #tcx-root .tcx-sec.status, #tcx-root .tcx-sec.routine { display: none; }
